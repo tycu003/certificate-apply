@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
@@ -85,8 +86,7 @@
 
 <script>
 /* ═══════ 設定：把 Apps Script 部署後的網址（結尾是 /exec）貼在下面的引號裡 ═══════ */
-var API_URL = 'https://script.google.com/macros/s/AKfycbxz_kVkI9s-kcbqSOp9Eo7mK66B7-5A7iG2ZYEwpJU9R5vnomvzMaWAeRxdC78I_nXW/exec<!DOCTYPE html>
-';
+var API_URL = 'https://script.google.com/macros/s/AKfycbxz_kVkI9s-kcbqSOp9Eo7mK66B7-5A7iG2ZYEwpJU9R5vnomvzMaWAeRxdC78I_nXW/exec';
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 function api(action, payload){
@@ -102,9 +102,32 @@ var DAYS = ['一','二','三','四','五','六','日'];
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 
+/* 先用這支手機上次存的課程清單立刻顯示，背景再抓最新的；第二次打開幾乎是秒開 */
+var CKEY = 'tycc_form_cache_v1';
+function readLocal(){
+  try{
+    var d = JSON.parse(localStorage.getItem(CKEY) || 'null');
+    // 只接受格式正確的快取（課程清單只用來顯示，送出時一律由伺服器重新檢查）
+    if(!d || typeof d !== 'object' || !Array.isArray(d.courses) || typeof d.title !== 'string') return null;
+    d.courses = d.courses.filter(function(c){ return c && typeof c.code === 'string' && typeof c.name === 'string'; });
+    return d;
+  }catch(e){ return null; }
+}
+function saveLocal(d){ try{ localStorage.setItem(CKEY, JSON.stringify(d)); }catch(e){} }
 function init(){
-  api('formData').then(function(d){ DATA = d; if(d.title) document.title = d.title; render(); })
-    .catch(function(e){ document.getElementById('app').innerHTML='<div class="closed">載入失敗：'+esc(e.message)+'</div>'; });
+  var cached = readLocal();
+  if(cached && cached.courses && cached.courses.length){ DATA = cached; if(cached.title) document.title = cached.title; render(); }
+  else document.getElementById('app').innerHTML = '<div class="loading">正在載入課程清單…<br><span style="font-size:15px">第一次打開大約需要幾秒鐘</span></div>';
+  api('formData').then(function(d){
+    saveLocal(d);
+    if(!DATA){ DATA = d; if(d.title) document.title = d.title; render(); return; }
+    var changedOpen = DATA.open !== d.open, changedHead = DATA.title !== d.title || DATA.desc !== d.desc;
+    DATA = d; if(d.title) document.title = d.title;
+    var busy = document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+    if(changedOpen || (changedHead && !busy && !picked.length)) render();
+  }).catch(function(e){
+    if(!DATA) document.getElementById('app').innerHTML='<div class="closed">載入失敗：'+esc(e.message)+'<br><button class="again" onclick="location.reload()">重新整理</button></div>';
+  });
 }
 
 function render(){
@@ -221,10 +244,26 @@ function send(e){
   if(!picked.length){ err.textContent='請至少選擇一門課程'; return false; }
   err.textContent='';
   var btn = document.getElementById('btn'); btn.disabled=true; btn.textContent='送出中…';
-  api('submit', {name:name, phone:phone, courses:picked.map(function(c){return c.code;}), note:document.getElementById('note').value})
+  var payload = {name:name, phone:phone, courses:picked.map(function(c){return c.code;}), note:document.getElementById('note').value};
+  submitWithRetry(function(){ return api('submit', payload); }, btn)
     .then(function(res){ btn.disabled=false; btn.textContent='送出申請'; showResult(name, res); })
     .catch(function(x){ btn.disabled=false; btn.textContent='送出申請'; err.textContent = '送出失敗：'+x.message; });
   return false;
+}
+
+/* 太多人同時送出時，自動等幾秒再送（最多 4 次），學員不用自己重按 */
+function submitWithRetry(send, btn){
+  var tries = 0;
+  function attempt(){
+    return send().catch(function(e){
+      if(/系統忙碌中/.test((e && e.message) || '') && tries < 4){
+        tries++; btn.textContent = '排隊中，請稍候…（'+tries+'）';
+        return new Promise(function(r){ setTimeout(r, 1500 + Math.random()*2500); }).then(attempt);
+      }
+      throw e;
+    });
+  }
+  return attempt();
 }
 
 function showResult(name, res){
