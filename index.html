@@ -97,6 +97,16 @@ function api(action, payload){
           function(e){ throw (e && /連線失敗/.test(e.message)) ? e : new Error('網路連線失敗，請檢查網路後再試一次'); });
 }
 
+/* 申請來源：網址後面的 ?from=line、?from=web… 會跟著申請一起存，後台可以統計各管道人數 */
+var SRC = '';
+(function(){
+  try{
+    var s = (new URLSearchParams(location.search).get('from') || '').trim().toLowerCase();
+    if(/^[a-z0-9_-]{1,20}$/.test(s)){ SRC = s; sessionStorage.setItem('tycc_src', s); }
+    else SRC = sessionStorage.getItem('tycc_src') || '';
+  }catch(e){}
+})();
+
 var DATA = null, picked = [], dayFilter = '', activeIdx = -1, shown = [];
 var DAYS = ['一','二','三','四','五','六','日'];
 
@@ -244,7 +254,7 @@ function send(e){
   if(!picked.length){ err.textContent='請至少選擇一門課程'; return false; }
   err.textContent='';
   var btn = document.getElementById('btn'); btn.disabled=true; btn.textContent='送出中…';
-  var payload = {name:name, phone:phone, courses:picked.map(function(c){return c.code;}), note:document.getElementById('note').value};
+  var payload = {name:name, phone:phone, courses:picked.map(function(c){return c.code;}), note:document.getElementById('note').value, source:SRC};
   submitWithRetry(function(){ return api('submit', payload); }, btn)
     .then(function(res){ btn.disabled=false; btn.textContent='送出申請'; showResult(name, res); })
     .catch(function(x){ btn.disabled=false; btn.textContent='送出申請'; err.textContent = '送出失敗：'+x.message; });
