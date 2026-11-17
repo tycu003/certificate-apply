@@ -79,6 +79,27 @@
   .loading{text-align:center;padding:60px 0;color:var(--muted)}
   .again{display:block;width:100%;margin-top:14px;font:inherit;padding:12px;border-radius:12px;border:1.5px solid var(--brand);
     background:#fff;color:var(--brand);font-weight:700;cursor:pointer}
+  .dl{margin-top:8px;font-weight:700;color:var(--brand)}
+  .latebar{background:var(--bad-soft);color:var(--bad);border:2px solid #f3b8b1;border-radius:14px;padding:14px 18px;margin-top:14px;font-size:19px;font-weight:700;line-height:1.5}
+  .latebar button{font:inherit;font-size:17px;background:none;border:0;padding:0;color:var(--bad);text-decoration:underline;cursor:pointer;font-weight:400}
+  /* 製作費提醒：長輩用手機看，字要很大，但不能超出畫面 */
+  .modal{position:fixed;inset:0;z-index:100;background:rgba(40,10,25,.6);display:flex;align-items:center;justify-content:center;
+    padding:max(12px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom))}
+  .mbox{background:#fff;border-radius:20px;width:100%;max-width:560px;max-height:100%;display:flex;flex-direction:column;
+    padding:20px 20px 16px;box-shadow:0 20px 60px rgba(0,0,0,.3);font-size:clamp(21px,6vw,26px);line-height:1.55;overflow-wrap:anywhere}
+  .mbox .mi{font-size:clamp(44px,13vw,60px);text-align:center;line-height:1.1}
+  .mbox h2{margin:6px 0 14px;text-align:center;color:var(--bad);font-size:clamp(25px,7.2vw,32px);line-height:1.3}
+  .mbox .ms{overflow-y:auto;-webkit-overflow-scrolling:touch;flex:1 1 auto;min-height:0}
+  .mbox .mt{white-space:pre-line;font-weight:700}
+  .mbox .mbs{flex:none;padding-top:4px;border-top:1px solid transparent}
+  .mbox .mbs.more{border-top-color:var(--line)}
+  @media (max-height:640px){ .mbox .mi{display:none} .mbox .mb{padding:12px 8px;margin-top:10px} }
+  .mbox .fee{color:var(--bad);font-size:1.3em;font-weight:900}
+  .mbox .mb{display:block;width:100%;margin-top:14px;font:inherit;font-weight:800;padding:16px 10px;border-radius:14px;cursor:pointer;line-height:1.3}
+  .mbox .yes{background:var(--brand);color:#fff;border:0}
+  .mbox .yes:disabled{background:#d9c4ce;cursor:default}
+  .mbox .no{background:#fff;color:var(--muted);border:2px solid var(--line);font-size:.85em;font-weight:700}
+  body.lock{overflow:hidden}
 </style>
 </head>
 <body>
@@ -129,9 +150,10 @@ function init(){
   if(cached && cached.courses && cached.courses.length){ DATA = cached; if(cached.title) document.title = cached.title; render(); }
   else document.getElementById('app').innerHTML = '<div class="loading">正在載入課程清單…<br><span style="font-size:15px">第一次打開大約需要幾秒鐘</span></div>';
   api('formData').then(function(d){
+    d._recv = Date.now();
     saveLocal(d);
     if(!DATA){ DATA = d; if(d.title) document.title = d.title; render(); return; }
-    var changedOpen = DATA.open !== d.open, changedHead = DATA.title !== d.title || DATA.desc !== d.desc;
+    var changedOpen = DATA.open !== d.open || DATA.deadline !== d.deadline || DATA.lateMode !== d.lateMode || DATA.late !== d.late, changedHead = DATA.title !== d.title || DATA.desc !== d.desc;
     DATA = d; if(d.title) document.title = d.title;
     var busy = document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
     if(changedOpen || (changedHead && !busy && !picked.length)) render();
@@ -145,7 +167,9 @@ function render(){
   var head = '<header><h1>'+esc(DATA.title||'學習證明申請')+'</h1></header>'+
              (DATA.desc?'<div class="desc">'+esc(DATA.desc)+'</div>':'');
   if(!DATA.open){ app.innerHTML = head+'<div class="card closed">目前未開放申請，謝謝！</div>'; return; }
-  app.innerHTML = head +
+  if(isLate() && DATA.lateMode !== 'fee'){ app.innerHTML = head+'<div class="card closed" style="font-size:20px">申請已於<br><b>'+esc(DATA.deadlineText)+'</b><br>截止，謝謝！</div>'; return; }
+  if(DATA.deadlineText && !isLate()) head = head.replace(/<\/div>$/, '<div class="dl">申請截止：'+esc(DATA.deadlineText)+'</div></div>');
+  app.innerHTML = head + (isLate() ? '<div class="latebar">⚠️ 已過申請期限，現在申請需收製作費。<button type="button" onclick="feeModal()">看說明</button></div>' : '') +
   '<form id="f" autocomplete="off" onsubmit="return send(event)">'+
   '<div class="card"><label class="q" for="name">申請人姓名<span class="req">*</span></label>'+
     '<div class="hint"><b style="color:var(--bad)">請填寫報名時的完整全名</b>（不要只填姓氏、暱稱或英文名），系統會用全名確認您有上這門課。</div>'+
@@ -166,6 +190,9 @@ function render(){
   '<button class="submit" id="btn">送出申請</button></form>'+
   '<div class="result" id="result"></div>';
 
+  // 已過截止時間（收製作費）：點姓名欄時先跳出提醒
+  var nm = document.getElementById('name');
+  nm.addEventListener('focus', function(){ if(isLate() && !FEE_ACK) feeModal(); });
   var q = document.getElementById('q'), list = document.getElementById('list');
   q.addEventListener('input', function(){ openList(); });
   q.addEventListener('focus', function(){ openList(); });
@@ -186,6 +213,40 @@ function render(){
     var o = e.target.closest('.opt'); if(!o) return; e.preventDefault();
     pick(shown[+o.dataset.i]);
   });
+}
+
+/* ── 申請截止／製作費 ── */
+var FEE_ACK = false, LATE_FORCED = false;
+function isLate(){
+  if(LATE_FORCED) return true;
+  if(!DATA || !DATA.deadline) return false;
+  var off = DATA.now ? DATA.now - (DATA._recv || Date.now()) : 0;   // 用伺服器時間，避免手機時間不準
+  return Date.now() + off >= DATA.deadline;
+}
+function feeText(){
+  var t = DATA.lateMsg || '申請期限已過\n現在申請需收製作費\n於領取時付費';
+  return esc(t).replace(/(\$\s?\d[\d,]*\s*元?|\d[\d,]*\s*元)/g, '<span class="fee">$1</span>');
+}
+function feeModal(onYes){
+  if(document.getElementById('feem')) return;
+  var nm = document.getElementById('name'); if(nm) nm.blur();
+  var m = document.createElement('div');
+  m.className = 'modal'; m.id = 'feem'; m.setAttribute('role','dialog'); m.setAttribute('aria-modal','true');
+  m.innerHTML = '<div class="mbox"><div class="ms" id="feems"><div class="mi">⚠️</div><h2>請先看這裡</h2><div class="mt">'+feeText()+'</div></div>'+
+    '<div class="mbs" id="feembs"><button type="button" class="mb yes" id="feeyes">我知道了，繼續申請</button>'+
+    '<button type="button" class="mb no" id="feeno">不申請了</button></div></div>';
+  document.body.appendChild(m); document.body.classList.add('lock');
+  // 字放很大、一個畫面放不下時：要先把說明滑到底，才能按「繼續申請」，避免沒看到製作費
+  var ms = document.getElementById('feems'), yes = document.getElementById('feeyes');
+  var atEnd = function(){ return ms.scrollTop + ms.clientHeight >= ms.scrollHeight - 4; };
+  if(!atEnd()){
+    document.getElementById('feembs').classList.add('more');
+    yes.disabled = true; yes.textContent = '請先往下滑，看完說明 ↓';
+    ms.addEventListener('scroll', function(){ if(yes.disabled && atEnd()){ yes.disabled = false; yes.textContent = '我知道了，繼續申請'; } });
+  }
+  var close = function(){ m.remove(); document.body.classList.remove('lock'); };
+  document.getElementById('feeyes').onclick = function(){ FEE_ACK = true; close(); if(onYes) onYes(); else { var n = document.getElementById('name'); if(n) n.focus(); } };
+  document.getElementById('feeno').onclick = function(){ close(); window.scrollTo(0,0); };
 }
 
 function hay(c){ return [c.name,c.teacher,c.time,c.center,c.place,c.code].join(' ').toLowerCase(); }
@@ -252,12 +313,18 @@ function send(e){
   if(name.replace(/\s/g,'').length<2 || /(先生|小姐|太太|女士|老師|阿姨|伯伯)$/.test(name)){ err.textContent='請填寫完整全名，例如「王小明」'; document.getElementById('name').focus(); return false; }
   if(phone.replace(/\D/g,'').length<9){ err.textContent='請填寫正確的手機號碼'; return false; }
   if(!picked.length){ err.textContent='請至少選擇一門課程'; return false; }
+  if(isLate() && !FEE_ACK){ feeModal(function(){ send(e); }); return false; }
   err.textContent='';
   var btn = document.getElementById('btn'); btn.disabled=true; btn.textContent='送出中…';
-  var payload = {name:name, phone:phone, courses:picked.map(function(c){return c.code;}), note:document.getElementById('note').value, source:SRC};
+  var payload = {name:name, phone:phone, courses:picked.map(function(c){return c.code;}), note:document.getElementById('note').value, source:SRC, feeAck:FEE_ACK};
   submitWithRetry(function(){ return api('submit', payload); }, btn)
     .then(function(res){ btn.disabled=false; btn.textContent='送出申請'; showResult(name, res); })
-    .catch(function(x){ btn.disabled=false; btn.textContent='送出申請'; err.textContent = '送出失敗：'+x.message; });
+    .catch(function(x){
+      btn.disabled=false; btn.textContent='送出申請';
+      // 頁面開著時剛好過了截止時間
+      if(/製作費/.test(x.message||'')){ LATE_FORCED = true; FEE_ACK = false; DATA.lateMode = 'fee'; feeModal(function(){ send(e); }); return; }
+      if(/截止/.test(x.message||'')){ err.textContent = x.message; return; }
+      err.textContent = '送出失敗：'+x.message; });
   return false;
 }
 
